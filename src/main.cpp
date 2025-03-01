@@ -1,6 +1,6 @@
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <HTTPClient.h>
-#include <NimBLEDevice.h>
 #include <Preferences.h>
 #include <TinyGPS++.h>
 #include <WiFi.h>
@@ -13,10 +13,6 @@
 #define GPS_RX_PIN 2  // GPS 模块 TX 接到的引脚
 #define GPS_TX_PIN 3  // GPS 模块 RX 接到的引脚
 #define GPS_BAUD 9600
-
-// BLE 服务和特征的 UUID
-#define SERVICE_UUID "38182fed-7e5a-4b03-9d17-67d8ebd094e1"
-#define CHARACTERISTIC_UUID "e4a863f6-9993-449f-bf85-0ed9b108d539"
 
 // 按键相关参数
 #define SHORT_PRESS_TIME 2000  // 短按阈值，单位毫秒
@@ -38,97 +34,23 @@ bool ledState = false;             // 记录 LED 当前状态
 void handleButton();
 void saveWiFi(const String& ssid, const String& password);
 void loadWiFi(String& ssid, String& password);
+void sendPostRequest();
 
 Preferences preferences;
 
 HardwareSerial GPS(1);  // 使用 UART1
 TinyGPSPlus gps;
 
-bool inited = false;
-
-// BLE 服务器回调类
-class MyServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer* pServer) { Serial.println("设备已连接！"); }
-  void onDisconnect(NimBLEServer* pServer) { Serial.println("设备已断开！"); }
-};
-
-// BLE 特征回调类
-class MyCharacteristicCallbacks : public NimBLECharacteristicCallbacks {
-  void onRead(NimBLECharacteristic* pCharacteristic) {
-    Serial.println("读取数据...");
-    pCharacteristic->setValue("Hello World!");
-  }
-  void onWrite(NimBLECharacteristic* pCharacteristic) {
-    Serial.println("写入数据...");
-    String input = pCharacteristic->getValue().c_str();  // 更新字符串数据
-    int startIdx = input.indexOf("$");
-    int endIdx = input.indexOf("!");
-
-    if (startIdx != -1 && endIdx != -1 && endIdx > startIdx) {
-      String command = input.substring(startIdx + 1, endIdx);
-      // "$W:[MyWiFi][MyPassword]!"
-      if (command.startsWith("W:")) {  // Wifi配置
-        int ssidStart = input.indexOf("[", input.indexOf(':')) + 1;
-        int ssidEnd = input.indexOf("]", ssidStart);
-        if (ssidStart == 0 || ssidEnd == -1) {
-          Serial.println("格式错误: SSID 解析失败");
-          return;
-        }
-        String ssid = input.substring(ssidStart, ssidEnd);
-
-        int passwordStart = input.indexOf("[", ssidEnd) + 1;
-        int passwordEnd = input.indexOf("]", passwordStart);
-        if (passwordStart == 0 || passwordEnd == -1) {
-          Serial.println("格式错误: 密码解析失败");
-          return;
-        }
-        String password = input.substring(passwordStart, passwordEnd);
-        Serial.println("SSID: " + ssid + ", 密码: " + password);
-        saveWiFi(ssid, password);
-      }
-    }
-  }
-};
-
 void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLDOWN);
   pinMode(LED_PIN, OUTPUT);  // 设置 LED 引脚为输出模式
   Serial.begin(9600);
 
-  // 初始化 BLE
-  NimBLEDevice::init("ESP32-C3");
-
-  // 创建 BLE 服务器
-  NimBLEServer* pServer = NimBLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
-
-  // 创建服务
-  NimBLEService* pService = pServer->createService(SERVICE_UUID);
-
-  // 创建特征
-  NimBLECharacteristic* pCharacteristic = pService->createCharacteristic(
-      CHARACTERISTIC_UUID, NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE);
-  pCharacteristic->setCallbacks(new MyCharacteristicCallbacks());
-
-  // 启动服务
-  pService->start();
-
-  // 开启广告
-  NimBLEAdvertising* pAdvertising = pServer->getAdvertising();
-  pAdvertising->addServiceUUID(pService->getUUID());
-  pAdvertising->start();
-
-  String storedSSID, storedPassword;
-  loadWiFi(storedSSID, storedPassword);
-  Serial.println(storedSSID + ", " + storedPassword);
-  if (storedSSID.length() > 0) {
-    inited = true;
-    WiFi.begin(storedSSID, storedPassword);
-  }
+  WiFi.begin("ChinaNet-GSLh", "uhcxwszh");
 }
 
 void loop() {
-  if (!inited) {
+  if (WiFi.status() != WL_CONNECTED) {
     unsigned long currentMillis = millis();  // 获取当前时间戳
 
     if (currentMillis - previousMillis >= 1000) {
@@ -165,6 +87,7 @@ void handleButton() {
           unsigned long pressDuration = millis() - buttonPressTime;
           if (pressDuration < SHORT_PRESS_TIME) {
             Serial.println("短按");
+            sendPostRequest();
           } else if (pressDuration >= SHORT_PRESS_TIME &&
                      pressDuration < LONG_PRESS_TIME) {
             Serial.println("长按");
@@ -193,4 +116,38 @@ void loadWiFi(String& ssid, String& password) {
   ssid = preferences.getString("ssid", "");          // 读取 SSID，默认值为空
   password = preferences.getString("password", "");  // 读取密码
   preferences.end();                                 // 关闭存储
+}
+
+void sendPostRequest() {
+  HTTPClient http;
+  String url = "http://192.168.2.185:3001/api/notification/875658697@qq.com";
+
+  JsonDocument doc;
+  doc["content"] = "来自ESP32-C3的问候";
+  doc["from"] = "hardware";
+
+  String jsonData;
+  serializeJson(doc, jsonData);
+
+  // 配置 HTTP 客户端
+  http.begin(url);
+
+  // 设置请求头
+  http.addHeader("Content-Type", "application/json");
+
+  // 发送 POST 请求
+  int httpResponseCode = http.POST(jsonData);
+
+  // 检查响应状态码
+  if (httpResponseCode > 0) {
+    String response = http.getString();
+    Serial.println(httpResponseCode);
+    Serial.println(response);
+  } else {
+    Serial.print("错误代码: ");
+    Serial.println(httpResponseCode);
+  }
+
+  // 结束 HTTP 客户端
+  http.end();
 }
