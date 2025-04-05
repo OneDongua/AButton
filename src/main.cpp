@@ -10,8 +10,8 @@
 #define BUTTON_PIN 0
 
 // GPS 模块参数
-#define GPS_RX_PIN 2  // GPS 模块 TX 接到的引脚
-#define GPS_TX_PIN 3  // GPS 模块 RX 接到的引脚
+#define GPS_RX_PIN 20  // GPS 模块 TX 接到的引脚 是TX！！！反过来定义的！！！
+#define GPS_TX_PIN 21  // GPS 模块 RX 接到的引脚 是RX！！！
 #define GPS_BAUD 9600
 
 // 按键相关参数
@@ -30,6 +30,11 @@ bool buttonPressed = false;          // 按钮是否被按下
 unsigned long previousMillis = 0;  // 记录上次 LED 状态改变的时间戳
 bool ledState = false;             // 记录 LED 当前状态
 
+// GPS 相关变量
+HardwareSerial GPS(1);  // 使用 UART1
+TinyGPSPlus gps;
+bool gpsUpdated = false;
+
 // 函数声明
 void handleButton();
 void saveWiFi(const String& ssid, const String& password);
@@ -38,13 +43,11 @@ void sendPostRequest();
 
 Preferences preferences;
 
-HardwareSerial GPS(1);  // 使用 UART1
-TinyGPSPlus gps;
-
 void setup() {
   pinMode(BUTTON_PIN, INPUT_PULLDOWN);
   pinMode(LED_PIN, OUTPUT);  // 设置 LED 引脚为输出模式
   Serial.begin(9600);
+  GPS.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
 
   WiFi.begin("ChinaNet-GSLh", "uhcxwszh");
 }
@@ -57,6 +60,29 @@ void loop() {
       previousMillis = currentMillis;   // 更新上次闪烁时间
       ledState = !ledState;             // 切换 LED 状态
       digitalWrite(LED_PIN, ledState);  // 控制 LED
+    }
+  } else {
+    unsigned long currentMillis = millis();  // 获取当前时间戳
+
+    if (currentMillis - previousMillis >= 500) {
+      previousMillis = currentMillis;  // 更新上次闪烁时间
+
+      // 更新 gps 数据
+      while (GPS.available()) {
+        char c = GPS.read();  // 从 GPS 模块读取字符
+        gps.encode(c);        // 使用 TinyGPS++ 解析数据
+
+        if (!gpsUpdated && gps.location.isUpdated()) {
+          // 第一次更新GPS数据
+          gpsUpdated = true;
+          Serial.println("GPS已接收到第一次更新！");
+        }
+      }
+
+      if (!gpsUpdated) {
+        ledState = !ledState;             // 切换 LED 状态
+        digitalWrite(LED_PIN, ledState);  // 控制 LED
+      }
     }
   }
 
@@ -119,12 +145,46 @@ void loadWiFi(String& ssid, String& password) {
 }
 
 void sendPostRequest() {
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi未连接，无法发送HTTP请求！");
+    return;
+  }
+  double latitude, longitude, altitude;
+  if (gps.location.isValid()) {
+    // 输出解析后的常用信息
+    Serial.print("Latitude: ");
+    Serial.print(gps.location.lat(), 6);  // 输出纬度
+    Serial.print(", Longitude: ");
+    Serial.print(gps.location.lng(), 6);  // 输出经度
+    Serial.print(", Altitude: ");
+    if (gps.altitude.isValid()) {
+      Serial.print(gps.altitude.meters());
+      Serial.print(" m");
+    } else {
+      Serial.print("高度无效");
+    }
+    latitude = gps.location.lat();
+    longitude = gps.location.lng();
+    altitude = gps.altitude.isValid() ? gps.altitude.meters() : 0.0;
+
+    Serial.println();
+  } else {
+    Serial.println("无可用GPS数据，使用默认值");
+    latitude = 23.074334;
+    longitude = 114.415251;
+    altitude = 20.00;
+  }
   HTTPClient http;
+  http.setTimeout(5000);  // 设置超时时间为5秒
   String url = "http://192.168.2.185:3001/api/notification/875658697@qq.com";
 
   JsonDocument doc;
-  doc["content"] = "来自ESP32-C3的问候";
+  doc["content"] = "新急救消息";
   doc["from"] = "hardware";
+  JsonObject location = doc["location"].to<JsonObject>();
+  location["latitude"] = latitude;
+  location["longitude"] = longitude;
+  location["altitude"] = altitude;
 
   String jsonData;
   serializeJson(doc, jsonData);
